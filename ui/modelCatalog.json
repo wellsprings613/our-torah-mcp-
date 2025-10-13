@@ -1,0 +1,163 @@
+[ 
+  {
+    "id": "openai/gpt-5",
+    "label": "GPT-5",
+    "provider": "OpenAI",
+    "description": "Next-generation GPT series dominating OpenRouter rankings for deep reasoning and planning.",
+    "tags": ["reasoning", "planning", "analysis"]
+  },
+  {
+    "id": "openai/gpt-5-codex",
+    "label": "GPT-5 Codex",
+    "provider": "OpenAI",
+    "description": "GPT-5 Codex tuned for coding, tool execution, and autonomous agent workflows.",
+    "tags": ["coding", "agents", "analysis"]
+  },
+  {
+    "id": "x-ai/grok-code-fast-1",
+    "label": "Grok Code Fast 1",
+    "provider": "xAI",
+    "description": "Top-ranked Grok for coding and agentic tasks, leading OpenRouter usage in 2025.",
+    "tags": ["coding", "speed", "agents"]
+  },
+  {
+    "id": "x-ai/grok-4-verse",
+    "label": "Grok 4 Verse",
+    "provider": "xAI",
+    "description": "Premium Grok reasoning model used heavily for analysis and long-form answers.",
+    "tags": ["reasoning", "analysis"]
+  },
+  {
+    "id": "x-ai/grok-4-fast",
+    "label": "Grok 4 Fast",
+    "provider": "xAI",
+    "description": "Balanced Grok variant for conversational and general-purpose responses.",
+    "tags": ["chat", "balanced"]
+  },
+  {
+    "id": "anthropic/claude-4-sonnet-20250522",
+    "label": "Claude 4 Sonnet (2025-05-22)",
+    "provider": "Anthropic",
+    "description": "Latest Claude Sonnet release, ranking near the top for token usage.",
+    "tags": ["reasoning", "writing"]
+  },
+  {
+    "id": "anthropic/claude-4.5-sonnet-20250929",
+    "label": "Claude 4.5 Sonnet (2025-09-29)",
+    "provider": "Anthropic",
+    "description": "Newest Claude Sonnet with improved instruction-following.",
+    "tags": ["analysis", "safety"]
+  },
+  {
+    "id": "anthropic/claude-4-haiku-20250522",
+    "label": "Claude 4 Haiku (2025-05-22)",
+    "provider": "Anthropic",
+    "description": "High-speed Claude tier popular for daily chat workloads.",
+    "tags": ["speed", "chat"]
+  },
+  {
+    "id": "google/gemini-2.5-flash",
+    "label": "Gemini 2.5 Flash",
+    "provider": "Google",
+    "description": "Google’s latest Flash model dominating overall usage charts.",
+    "tags": ["multimodal", "speed"]
+  },
+  {
+    "id": "google/gemini-2.5-pro",
+    "label": "Gemini 2.5 Pro",
+    "provider": "Google",
+    "description": "Gemini Pro 2.5 with high reasoning accuracy and long context.",
+    "tags": ["reasoning", "long-context"]
+  },
+  {
+    "id": "google/gemini-2.0-flash-exp",
+    "label": "Gemini 2.0 Flash Experimental",
+    "provider": "Google",
+    "description": "Experimental Flash release trending on OpenRouter’s rankings.",
+    "tags": ["experimental", "fast"]
+  },
+  {
+    "id": "openai/gpt-4.1",
+    "label": "GPT-4.1",
+    "provider": "OpenAI",
+    "description": "OpenAI flagship 2025 model with strong adoption.",
+    "tags": ["balanced", "reasoning"]
+  },
+  {
+    "id": "openai/gpt-4.1-mini-2025-04-14",
+    "label": "GPT-4.1 Mini (2025-04-14)",
+    "provider": "OpenAI",
+    "description": "Mini GPT-4.1 build noted in current rankings for cost-effective chat.",
+    "tags": ["economy", "chat"]
+  },
+  {
+    "id": "openai/gpt-4o",
+    "label": "GPT-4o",
+    "provider": "OpenAI",
+    "description": "GPT-4o Omni model still heavily used across OpenRouter.",
+    "tags": ["multimodal", "chat"]
+  },
+  {
+    "id": "openai/gpt-4o-mini",
+    "label": "GPT-4o Mini",
+    "provider": "OpenAI",
+    "description": "Budget-friendly GPT-4o variant consistently ranking in top 20.",
+    "tags": ["economy", "speed"]
+  },
+  {
+    "id": "deepseek/deepseek-v3",
+    "label": "DeepSeek V3",
+    "provider": "DeepSeek",
+    "description": "Free-tier DeepSeek model climbing the rankings for programming tasks.",
+    "tags": ["free", "coding"]
+  },
+  {
+    "id": "deepseek/deepseek-coder-v2.5",
+    "label": "DeepSeek Coder V2.5",
+    "provider": "DeepSeek",
+    "description": "Coder-focused DeepSeek release with strong SWE-Bench performance.",
+    "tags": ["coding", "reasoning"]
+  },
+  {
+    "id": "mistral/mistral-large-2411",
+    "label": "Mistral Large 24.11",
+    "provider": "Mistral",
+    "description": "Mistral’s flagship appearing in OpenRouter’s weekly top 20.",
+    "tags": ["balanced", "analysis"]
+  },
+  {
+    "id": "mistral/mixtral-8x22b-instruct",
+    "label": "Mixtral 8x22B Instruct",
+    "provider": "Mistral",
+    "description": "Sparse Mixtral configuration popular for throughput-conscious users.",
+    "tags": ["moe", "speed"]
+  },
+  {
+    "id": "meta-llama/llama-3.1-70b-instruct",
+    "label": "LLaMA 3.1 70B Instruct",
+    "provider": "Meta",
+    "description": "Meta’s top open-weight model frequently cited in rankings.",
+    "tags": ["open", "balanced"]
+  },
+  {
+    "id": "qwen/qwen2.5-72b-instruct",
+    "label": "Qwen2.5 72B Instruct",
+    "provider": "Alibaba Qwen",
+    "description": "Qwen model with rising token share and strong multilingual support.",
+    "tags": ["multilingual", "reasoning"]
+  },
+  {
+    "id": "databricks/dbrx-instruct",
+    "label": "DBRX Instruct",
+    "provider": "Databricks",
+    "description": "Enterprise-tuned DBRX model appearing consistently in top usage stats.",
+    "tags": ["enterprise", "analysis"]
+  },
+  {
+    "id": "perplexity/pplx-70b-online",
+    "label": "PPLX 70B Online",
+    "provider": "Perplexity",
+    "description": "Perplexity’s retrieval-augmented model trending in OpenRouter rankings.",
+    "tags": ["retrieval", "chat"]
+  }
+]

@@ -1,0 +1,71 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Torah MCP Chat</title>
+    <link rel="stylesheet" href="/style.css" />
+  </head>
+  <body>
+    <div class="app">
+      <header>
+        <h1>Torah MCP Chat</h1>
+        <p class="subtitle">Ask any Torah question and get sources with a single click.</p>
+      </header>
+
+      <section class="controls">
+        <label>
+          Mode
+          <select id="mode-select">
+            <option value="auto_explain">Auto Explain</option>
+            <option value="guided_chavruta">Guided Chavruta</option>
+            <option value="insight_layers">Insight Layers</option>
+          </select>
+        </label>
+        <label>
+          Search models
+          <input id="model-search" type="search" placeholder="Search by provider or name" />
+        </label>
+        <label>
+          Choose model
+          <select id="model-select"></select>
+        </label>
+        <label id="commentators-label" style="display:none;">
+          Commentators (optional)
+          <input id="commentators-input" type="text" placeholder="e.g., Rashi, Ibn Ezra, Ramban" />
+        </label>
+      </section>
+
+      <div class="content-layout">
+        <main id="chat-window" class="main-pane"></main>
+        <aside class="sidebar">
+          <div class="sidebar-header">
+            <h3>Upcoming Alerts</h3>
+            <div class="sidebar-controls">
+              <input id="alerts-date" type="date" />
+              <label class="diaspora-toggle"><input id="alerts-diaspora" type="checkbox" checked /> Diaspora</label>
+            </div>
+          </div>
+          <div id="alerts-list" class="alerts-list"></div>
+        </aside>
+      </div>
+
+      <form id="chat-form">
+        <textarea id="message-input" placeholder="Ask your Torah question here..."></textarea>
+        <div class="actions">
+          <button type="submit">Send</button>
+          <button type="button" id="clear-history">Clear</button>
+        </div>
+      </form>
+    </div>
+
+    <template id="message-template">
+      <div class="message">
+        <div class="meta"></div>
+        <pre class="content"></pre>
+      </div>
+    </template>
+
+    <script src="/app.js" type="module"></script>
+  </body>
+</html>
