@@ -110,7 +110,32 @@ OPENROUTER_MODEL=gpt-4o-mini
 
 # Sefaria API (usually automatic)
 SEFARIA_MCP_URL=http://localhost:3000/mcp
+
+# Web search providers (optional but recommended)
+TAVILY_API_KEY=your_key_here
+# SERPAPI_KEY=optional_fallback_key
+# BRAVE_API_KEY=optional_fallback_key
 ```
+
+### **Using with ChatGPT Connectors (Developer Mode)**
+
+Create **two connectors** so GPT can call both the Sefaria tools and the web search/fetch bridge:
+
+1. **Torah MCP (Sefaria tools)**
+   - **MCP Server URL:** `https://YOUR_DOMAIN/mcp/sse/`
+   - **Authentication:** None (leave blank)
+   - **Allowed tools:** (select the ones you need, e.g., `search`, `fetch`, `sugya_explorer`, `find_refs`, etc.)
+   - Check **“I trust this application.”**
+
+2. **Web Research MCP (search + fetch for GPT Deep Research)**
+   - **MCP Server URL:** `https://YOUR_DOMAIN/mcp-web/sse/`
+   - **Authentication:** None
+   - **Allowed tools:** `search`, `fetch`
+   - Check **“I trust this application.”**
+
+> **Important:** These URLs must be served over HTTPS and publicly reachable. The server accepts Streamable HTTP at `/mcp` and `/mcp-web`, and SSE for connectors at `/mcp/sse/` + `/mcp/messages` and `/mcp-web/sse/` + `/mcp-web/messages`.
+
+> **Health check:** `GET https://YOUR_DOMAIN/healthz` returns JSON with uptime and counters.
 
 ---
 

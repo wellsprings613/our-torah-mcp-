@@ -35,6 +35,8 @@ function setCache<T>(key: string, value: T, ttlMs = 5 * 60_000) {
 }
 
 const server = new McpServer({ name: 'torah-mcp', version: '0.1.0' });
+const sefariaSseTransports: Record<string, SSEServerTransport> = {};
+const sefariaSseHeartbeats: Record<string, NodeJS.Timeout> = {};
 // A separate MCP server exposing generic web search/fetch suitable for GPT connectors
 const webServer = new McpServer(
   { name: 'open-deep-research-web', version: '0.1.0' },
@@ -1439,6 +1441,39 @@ app.post('/mcp', async (req: Request, res: Response) => {
   }
 });
 
+app.get(['/mcp/sse', '/mcp/sse/'], async (_req: Request, res: Response) => {
+  try {
+    const transport = new SSEServerTransport('/mcp/messages', res);
+    const sid = transport.sessionId;
+    sefariaSseTransports[sid] = transport;
+    sefariaSseHeartbeats[sid] = setInterval(() => {
+      server.sendLoggingMessage({ level: 'debug', data: 'ping' }, sid).catch(() => {});
+    }, 25000);
+    transport.onclose = () => {
+      delete sefariaSseTransports[sid];
+      const h = sefariaSseHeartbeats[sid];
+      if (h) { clearInterval(h); delete sefariaSseHeartbeats[sid]; }
+    };
+    await server.connect(transport);
+  } catch (err) {
+    console.error('Sefaria MCP SSE init error', err);
+    if (!res.headersSent) res.status(500).send('Error establishing SSE stream');
+  }
+});
+
+app.post('/mcp/messages', async (req: Request, res: Response) => {
+  const sessionId = String((req.query as any).sessionId || '');
+  if (!sessionId) return res.status(400).send('Missing sessionId parameter');
+  const transport = sefariaSseTransports[sessionId];
+  if (!transport) return res.status(404).send('Session not found');
+  try {
+    await transport.handlePostMessage(req as any, res as any, (req as any).body);
+  } catch (err) {
+    console.error('Sefaria MCP SSE message error', err);
+    if (!res.headersSent) res.status(500).send('Error handling request');
+  }
+});
+
 // --- Web research MCP: search + fetch (generic web) ---
 // Environment/config
 const TAVILY_API_KEY = process.env.TAVILY_API_KEY || '';
@@ -1787,9 +1822,9 @@ webServer.registerTool(
   }
 );
 
-// Rate limit for web MCP endpoints
-const webLimiter = rateLimit({ windowMs: 60_000, limit: 60, standardHeaders: 'draft-7', legacyHeaders: false });
-app.use(['/mcp-web', '/mcp-web/sse', '/mcp-web/messages'], webLimiter);
+// Rate limiting for MCP endpoints
+const mcpLimiter = rateLimit({ windowMs: 60_000, limit: 60, standardHeaders: 'draft-7', legacyHeaders: false });
+app.use(['/mcp', '/mcp/sse', '/mcp/messages', '/mcp-web', '/mcp-web/sse', '/mcp-web/messages'], mcpLimiter);
 
 app.post('/mcp-web', async (req: Request, res: Response) => {
   const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined, enableJsonResponse: true });
@@ -1840,6 +1875,9 @@ app.post('/mcp-web/messages', async (req: Request, res: Response) => {
 const port = parseInt(process.env.PORT || '3000', 10);
 app.listen(port, () => {
   console.log(`Torah MCP running at http://localhost:${port}/mcp`);
+  console.log(`Torah MCP SSE (for ChatGPT connectors):`);
+  console.log(`  SSE:       http://localhost:${port}/mcp/sse/`);
+  console.log(`  Messages:  http://localhost:${port}/mcp/messages`);
   console.log(`Web Research MCP running at http://localhost:${port}/mcp-web`);
   console.log(`Web Research MCP SSE (for ChatGPT connectors):`);
   console.log(`  SSE:       http://localhost:${port}/mcp-web/sse/`);
