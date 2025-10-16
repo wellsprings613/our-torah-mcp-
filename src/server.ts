@@ -1,5 +1,8 @@
 import express, { Request, Response } from 'express';
+import pino from 'pino';
+import pinoHttp from 'pino-http';
 import fetch, { RequestInit } from 'node-fetch';
+import config from 'config';
 import { z } from 'zod';
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
 import { SSEServerTransport } from '@modelcontextprotocol/sdk/server/sse.js';
@@ -11,6 +14,10 @@ import { Readability } from '@mozilla/readability';
 import pdfParse from 'pdf-parse';
 import { promises as dns } from 'node:dns';
 import net from 'node:net';
+import crypto from 'node:crypto';
+import http from 'node:http';
+import https from 'node:https';
+import { Buffer } from 'node:buffer';
 
 // Simple TTL cache
 type CacheEntry<T> = { value: T; expiresAt: number };
@@ -147,13 +154,26 @@ function isPrivateOrReserved(ip: string): boolean {
 
 const hasHebrew = (s: string) => /[\u0590-\u05FF]/.test(s);
 
+const httpAgent = new http.Agent({ keepAlive: true, maxSockets: 50 });
+const httpsAgent = new https.Agent({ keepAlive: true, maxSockets: 50 });
+
+// Vision / OpenAI configuration
+const OPENAI_API_KEY = (process.env.OPENAI_API_KEY || '').trim();
+const OPENAI_MODEL_VISION = (process.env.OPENAI_MODEL_VISION || 'gpt-4o-mini').trim();
+const OPENAI_MODEL_TEXT = (process.env.OPENAI_MODEL_TEXT || 'gpt-4o-mini').trim();
+const VISION_MAX_BYTES = Math.min(Math.max(parseInt(process.env.VISION_MAX_BYTES || '6000000', 10) || 6000000, 200000), 20000000);
+const VISION_TIMEOUT_MS = Math.min(Math.max(parseInt(process.env.VISION_TIMEOUT_MS || '20000', 10) || 20000, 3000), 60000);
+
 async function fetchJsonWithRetry(url: string | URL, init?: RequestInit, retries = 2, backoffMs = 400) {
   let lastErr: any;
   for (let attempt = 0; attempt <= retries; attempt++) {
     try {
       const controller = new AbortController();
       const t = setTimeout(() => controller.abort(), 7000); // 7s timeout
-      const resp = await fetch(url, { ...(init || {}), signal: controller.signal });
+      const u = typeof url === 'string' ? new URL(url) : url;
+      const agent = u.protocol === 'http:' ? (httpAgent as any) : (httpsAgent as any);
+      const options = { ...(init || {}), agent, signal: controller.signal } as RequestInit;
+      const resp = await fetch(url, options);
       clearTimeout(t);
       if (!resp.ok) {
         const txt = await resp.text().catch(() => "");
@@ -166,6 +186,105 @@ async function fetchJsonWithRetry(url: string | URL, init?: RequestInit, retries
     }
   }
   throw lastErr;
+}
+
+// Fetch an image buffer safely with size/type checks. Supports http(s) and data URIs.
+async function loadImageAsDataUrl(image: string): Promise<{ dataUrl: string; mime: string; bytes: number; sha256: string }> {
+  // data URI fast path
+  if (image.startsWith('data:')) {
+    const m = image.match(/^data:([^;]+);base64,(.+)$/);
+    if (!m) throw new Error('Unsupported data URI format');
+    const mime = m[1];
+    const b64 = m[2];
+    const buf = Buffer.from(b64, 'base64');
+    if (buf.length > VISION_MAX_BYTES) throw new Error('Image exceeds size limit');
+    const sha256 = crypto.createHash('sha256').update(buf).digest('hex');
+    return { dataUrl: `data:${mime};base64,${buf.toString('base64')}`, mime, bytes: buf.length, sha256 };
+  }
+
+  let u: URL;
+  try { u = new URL(image); } catch { throw new Error('image must be a valid URL or data URI'); }
+  if (!['http:', 'https:'].includes(u.protocol)) throw new Error('Only http/https/data URIs supported');
+
+  // SSRF guard
+  try {
+    const { address } = await dns.lookup(u.hostname).catch(() => ({ address: '' }));
+    if (u.hostname === 'localhost' || isPrivateOrReserved(address || '')) throw new Error('Blocked private/loopback host');
+  } catch {}
+
+  const controller = new AbortController();
+  const t = setTimeout(() => controller.abort(), VISION_TIMEOUT_MS);
+  const r = await fetch(u.toString(), { method: 'GET', signal: controller.signal } as RequestInit).finally(() => clearTimeout(t));
+  if (!r.ok) throw new Error(`Image fetch failed: HTTP ${r.status}`);
+  const ct = String(r.headers.get('content-type') || '').toLowerCase();
+  if (!ct.startsWith('image/')) throw new Error('URL does not appear to be an image');
+  const ab = await r.arrayBuffer();
+  const buf = Buffer.from(ab);
+  if (buf.length > VISION_MAX_BYTES) throw new Error('Image exceeds size limit');
+  const mime = ct.split(';')[0];
+  const dataUrl = `data:${mime};base64,${buf.toString('base64')}`;
+  const sha256 = crypto.createHash('sha256').update(buf).digest('hex');
+  return { dataUrl, mime, bytes: buf.length, sha256 };
+}
+
+async function openAIVisionExtract(dataUrl: string, instructions: string): Promise<any> {
+  if (!OPENAI_API_KEY) throw new Error('OpenAI not configured');
+  // Use Chat Completions for broad compatibility
+  const body: any = {
+    model: OPENAI_MODEL_VISION,
+    temperature: 0,
+    response_format: { type: 'json_object' },
+    messages: [
+      { role: 'system', content: 'You extract text and metadata from images. Output strict JSON with keys: text, languages (array of ISO codes like ["he","en"]).' },
+      {
+        role: 'user',
+        content: [
+          { type: 'text', text: instructions || 'Extract all Hebrew and English text, preserve line breaks.' },
+          { type: 'image_url', image_url: { url: dataUrl } }
+        ]
+      }
+    ]
+  };
+  const controller = new AbortController();
+  const t = setTimeout(() => controller.abort(), Math.min(VISION_TIMEOUT_MS, 25000));
+  const resp = await fetch('https://api.openai.com/v1/chat/completions', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'Authorization': `Bearer ${OPENAI_API_KEY}`
+    },
+    body: JSON.stringify(body),
+    signal: controller.signal
+  } as RequestInit).finally(() => clearTimeout(t));
+  if (!resp.ok) {
+    const errTxt = await resp.text().catch(() => '');
+    throw new Error(`OpenAI error ${resp.status}: ${errTxt.slice(0,200)}`);
+  }
+  const j: any = await resp.json();
+  const content = j?.choices?.[0]?.message?.content || '';
+  try { return JSON.parse(content); } catch { return { text: String(content || ''), languages: [] }; }
+}
+
+async function openAITranslate(text: string, target: string): Promise<string> {
+  if (!OPENAI_API_KEY) throw new Error('OpenAI not configured');
+  const body: any = {
+    model: OPENAI_MODEL_TEXT,
+    temperature: 0,
+    messages: [
+      { role: 'system', content: `Translate to ${target}. Keep proper nouns faithful. Return only the translation.` },
+      { role: 'user', content: text }
+    ]
+  };
+  const controller = new AbortController();
+  const t = setTimeout(() => controller.abort(), 20000);
+  const resp = await fetch('https://api.openai.com/v1/chat/completions', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${OPENAI_API_KEY}` },
+    body: JSON.stringify(body), signal: controller.signal
+  } as RequestInit).finally(() => clearTimeout(t));
+  if (!resp.ok) throw new Error(`OpenAI translate error ${resp.status}`);
+  const j: any = await resp.json();
+  return String(j?.choices?.[0]?.message?.content || '').trim();
 }
 
 async function tryResolveExactRef(query: string): Promise<string | null> {
@@ -619,6 +738,115 @@ server.registerTool(
       return { content: [{ type: 'text', text: JSON.stringify(out) }], structuredContent: out };
     }
     const out = { matches, metadata };
+    return { content: [{ type: 'text', text: JSON.stringify(out) }], structuredContent: out };
+  }
+);
+
+// --- Vision tools ---
+server.registerTool(
+  'vision_extract_text',
+  {
+    title: 'Vision: Extract Text',
+    description: 'Extract Hebrew and English text from an image (URL or data URI).',
+    inputSchema: { image: z.string().min(1) },
+    outputSchema: { extracted_text: z.string(), languages: z.array(z.string()).optional(), bytes: z.number().optional(), mime: z.string().optional(), image_hash: z.string().optional() }
+  },
+  async ({ image }) => {
+    const loaded = await loadImageAsDataUrl(image);
+    const res = await openAIVisionExtract(loaded.dataUrl, 'Extract all visible Hebrew and English text. Output JSON: {"text": string, "languages": [..]}.');
+    const text = normalizeText(String(res?.text || ''));
+    const out = { extracted_text: text, languages: Array.isArray(res?.languages) ? res.languages : undefined, bytes: loaded.bytes, mime: loaded.mime, image_hash: loaded.sha256 };
+    return { content: [{ type: 'text', text: JSON.stringify(out) }], structuredContent: out };
+  }
+);
+
+server.registerTool(
+  'vision_identify_source',
+  {
+    title: 'Vision: Identify Source',
+    description: 'Identify Sefaria references from extracted text snippets.',
+    inputSchema: { text: z.string().min(1), size: z.number().int().min(1).max(10).optional() },
+    outputSchema: { candidates: z.array(z.object({ ref: z.string(), url: z.string().url(), text: z.string().optional() })) }
+  },
+  async ({ text, size = 5 }) => {
+    const matches = await fallbackSearchRefsFromText(text, size);
+    const candidates = (matches || []).slice(0, size).map((m: any) => ({ ref: m.ref, url: m.url, text: m.text }));
+    const out = { candidates };
+    return { content: [{ type: 'text', text: JSON.stringify(out) }], structuredContent: out };
+  }
+);
+
+server.registerTool(
+  'vision_extract_and_find_refs',
+  {
+    title: 'Vision: Extract + Find Refs',
+    description: 'Extract text from image and find matching Sefaria references with optional excerpts.',
+    inputSchema: { image: z.string().min(1), maxRefs: z.number().int().min(1).max(6).optional(), langPref: z.enum(['en','he','bi']).optional() },
+    outputSchema: {
+      extracted_text: z.string(),
+      candidates: z.array(z.object({ ref: z.string(), url: z.string().url(), text: z.string().optional() })),
+      sources: z.array(z.object({ id: z.string(), title: z.string(), text: z.string(), url: z.string().url() })).optional()
+    }
+  },
+  async ({ image, maxRefs = 3, langPref = 'en' }) => {
+    const loaded = await loadImageAsDataUrl(image);
+    const res = await openAIVisionExtract(loaded.dataUrl, 'Extract all visible Hebrew and English text. Output JSON: {"text": string, "languages": [..]}.');
+    const extracted = normalizeText(String(res?.text || ''));
+    const matches = await fallbackSearchRefsFromText(extracted, Math.max(maxRefs, 3));
+    const candidates = (matches || []).slice(0, maxRefs).map((m: any) => ({ ref: m.ref, url: m.url, text: m.text }));
+    // Fetch small excerpts for the top refs using existing fetch tool logic
+    const sources: Array<{ id: string; title: string; text: string; url: string }> = [];
+    for (const c of candidates) {
+      try {
+        const u = new URL(`https://www.sefaria.org/api/v3/texts/${encodeURIComponent(c.ref)}`);
+        u.searchParams.append('version', 'english');
+        u.searchParams.append('version', 'hebrew');
+        u.searchParams.append('return_format', 'text_only');
+        const j: any = await fetchJsonWithRetry(u);
+        const title: string = j.indexTitle || j.title || c.ref;
+        const findLang = (arr: any[], targets: string[]) => arr?.find((v: any) => targets.includes(String(v.actualLanguage || v.language || '').toLowerCase()));
+        const enText = flattenText(findLang(j?.versions || [], ['en','english'])?.text || '');
+        const heText = flattenText(findLang(j?.versions || [], ['he','hebrew'])?.text || '');
+        let text = enText || heText || '';
+        if (langPref === 'he') text = heText || enText || '';
+        if (langPref === 'bi') text = [enText, heText].filter(Boolean).join('\n\n— — —\n\n');
+        sources.push({ id: c.ref, title, text: text.slice(0, 1200), url: c.url });
+      } catch {}
+    }
+    const out = { extracted_text: extracted, candidates, sources: sources.length ? sources : undefined };
+    return { content: [{ type: 'text', text: JSON.stringify(out) }], structuredContent: out };
+  }
+);
+
+server.registerTool(
+  'vision_translate',
+  {
+    title: 'Vision: Translate Text',
+    description: 'Translate Hebrew text to target language (prefers Sefaria translations if ref can be identified).',
+    inputSchema: { text: z.string().min(1), target_lang: z.enum(['en','he','fr','es']).optional() },
+    outputSchema: { translation: z.string(), sourceRef: z.string().optional(), url: z.string().url().optional(), method: z.enum(['sefaria','model']).optional() }
+  },
+  async ({ text, target_lang = 'en' }) => {
+    const snippet = text.replace(/\s+/g, ' ').slice(0, 160);
+    let ref: string | null = null;
+    try { ref = await tryResolveExactRef(snippet); } catch {}
+    if (ref) {
+      try {
+        const u = new URL(`https://www.sefaria.org/api/v3/texts/${encodeURIComponent(ref)}`);
+        u.searchParams.append('version', target_lang === 'he' ? 'hebrew' : 'english');
+        u.searchParams.append('return_format', 'text_only');
+        const j: any = await fetchJsonWithRetry(u);
+        const findLang = (arr: any[], targets: string[]) => arr?.find((v: any) => targets.includes(String(v.actualLanguage || v.language || '').toLowerCase()));
+        const v = findLang(j?.versions || [], target_lang === 'he' ? ['he','hebrew'] : ['en','english']);
+        const outText = normalizeText(flattenText(v?.text || ''));
+        if (outText) {
+          const out = { translation: outText, sourceRef: ref, url: toSefariaUrlFromRef(ref), method: 'sefaria' as const };
+          return { content: [{ type: 'text', text: JSON.stringify(out) }], structuredContent: out };
+        }
+      } catch {}
+    }
+    const translated = await openAITranslate(text, target_lang === 'he' ? 'Hebrew' : 'English');
+    const out = { translation: translated, method: 'model' as const };
     return { content: [{ type: 'text', text: JSON.stringify(out) }], structuredContent: out };
   }
 );
@@ -1421,27 +1649,100 @@ server.registerTool(
 );
 
 // HTTP server (Streamable HTTP transport)
-const app = express();
+export const app = express();
 app.use(express.json({ limit: '1mb' }));
+
+const cfg = config.util.toObject(config);
+const logLevel = process.env.LOG_LEVEL || cfg.logLevel || 'info';
+const logger = pino({ level: logLevel });
+
+app.use((pinoHttp as any)({
+  logger,
+  genReqId: (req: any) => (req.headers['x-request-id'] as string) || crypto.randomUUID(),
+}));
+
+// Optional API key auth for production
+const REQUIRED_API_KEY = (process.env.MCP_API_KEY || '').trim();
+function maybeRequireApiKey(req: Request, res: Response, next: Function) {
+  const requireKey = REQUIRED_API_KEY || cfg.api?.requireKey;
+  if (!requireKey) return next();
+  const provided = (req.headers['x-api-key'] as string) || '';
+  if (provided && (!REQUIRED_API_KEY || provided === REQUIRED_API_KEY)) return next();
+  res.status(401).json({ error: 'Unauthorized' });
+}
+const DASHBOARD_HTML = [
+  '<!DOCTYPE html><html><head><meta charset="utf-8"/><title>Torah MCP Dashboard</title>',
+  '<style>body{font-family:Arial, sans-serif;margin:20px;background:#f3f4f6;color:#111}h1{margin-bottom:0.5rem}section{background:#fff;padding:1rem;border-radius:8px;margin-bottom:1rem;box-shadow:0 1px 3px rgba(0,0,0,0.1)}table{width:100%;border-collapse:collapse}th,td{padding:0.5rem;text-align:left;border-bottom:1px solid #e5e7eb}code{background:#e5e7eb;padding:2px 4px;border-radius:4px}</style>',
+  '</head><body><h1>Torah MCP Dashboard</h1><p>Updated <span id="timestamp"></span></p>',
+  '<section><h2>Summary</h2><div id="summary"></div></section>',
+  '<section><h2>Tool Counts</h2><table><thead><tr><th>Tool</th><th>Calls</th></tr></thead><tbody id="tools"></tbody></table></section>',
+  '<section><h2>Cache</h2><div id="cache"></div></section>',
+  '<section><h2>Python Chains</h2><div id="python"></div></section>',
+  '<section><h2>Counters</h2><div id="counters"></div></section>',
+  "<script>async function load(){try{const res=await fetch(\"/healthz\");const data=await res.json();const fmt=(n)=>typeof n===\"number\"?n.toLocaleString():n;document.getElementById(\"timestamp\").textContent=new Date().toLocaleTimeString();document.getElementById(\"summary\").innerHTML=\"<strong>Requests:</strong> \"+fmt(data.requests)+\"<br/><strong>Avg latency:</strong> \"+fmt(data.avgLatencyMs)+\" ms<br/><strong>Errors:</strong> \"+fmt(data.errors);const tools=Object.entries(data.toolCounts||{}).sort((a,b)=>b[1]-a[1]);document.getElementById(\"tools\").innerHTML=tools.length?tools.map(([name,count])=>\"<tr><td>\"+name+\"</td><td>\"+fmt(count)+\"</td></tr>\").join(\"\"):\"<tr><td colspan=\\\"2\\\">No tool calls yet</td></tr>\";document.getElementById(\"cache\").innerHTML=\"<strong>Entries:</strong> \"+fmt(data.cacheSize);const py=data.pythonChains||{};document.getElementById(\"python\").innerHTML=\"<strong>Status:</strong> \"+(py.status||\"unknown\")+\"<br/><strong>Last check:</strong> \"+(py.checkedAt?new Date(py.checkedAt).toLocaleString():\"n/a\");const ctrs=data.counters||{};document.getElementById(\"counters\").innerHTML=Object.entries(ctrs).map(([k,v])=>\"<div><strong>\"+k+\":</strong> \"+fmt(v)+\"</div>\").join(\"\");}catch(err){document.body.innerHTML+=\"<p style=\\\"color:red\\\">Failed to load metrics</p>\";}}load();setInterval(load,5000);</script>",
+  '</body></html>'
+].join('');
+
 // Health counters
 const counters = { fetches: 0, cacheHits: 0, robotsBlocked: 0, errors: 0 };
+// Basic metrics
+const metrics = {
+  totalRequests: 0,
+  toolCounts: {} as Record<string, number>,
+  latSumMs: 0,
+  latCount: 0,
+  errors: 0,
+  toolLatencies: {} as Record<string, { sum: number; count: number }>,
+};
+let pythonChainHeartbeat: { status: 'ok' | 'error'; checkedAt: number } = { status: 'ok', checkedAt: Date.now() };
+
 app.get('/healthz', (_req: Request, res: Response) => {
-  res.json({ ok: true, uptime: process.uptime(), counters });
+  const avgLatencyMs = metrics.latCount ? Math.round(metrics.latSumMs / metrics.latCount) : 0;
+  const toolLatencyAvg: Record<string, number> = {};
+  for (const [name, stat] of Object.entries(metrics.toolLatencies)) {
+    toolLatencyAvg[name] = stat.count ? Math.round(stat.sum / stat.count) : 0;
+  }
+  res.json({
+    ok: true,
+    uptime: process.uptime(),
+    counters,
+    requests: metrics.totalRequests,
+    avgLatencyMs,
+    toolCounts: metrics.toolCounts,
+    toolLatencyAvg,
+    cacheSize: cache.size,
+    pythonChains: pythonChainHeartbeat,
+    errors: metrics.errors,
+  });
 });
 
-app.post('/mcp', async (req: Request, res: Response) => {
+app.post('/mcp', maybeRequireApiKey, async (req: Request, res: Response) => {
   const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined, enableJsonResponse: true });
   res.on('close', () => transport.close());
   try {
+    const started = Date.now();
     await server.connect(transport);
+    // Track tool name if present
+    const toolName = (req.body && req.body.method === 'tools/call' && req.body.params && (req.body.params.name as string)) || undefined;
     await transport.handleRequest(req, res, req.body);
+    const ms = Date.now() - started;
+    metrics.totalRequests++;
+    metrics.latSumMs += ms; metrics.latCount++;
+    if (toolName) metrics.toolCounts[toolName] = (metrics.toolCounts[toolName] || 0) + 1;
+    if (toolName) {
+      const stat = metrics.toolLatencies[toolName] || { sum: 0, count: 0 };
+      stat.sum += ms;
+      stat.count += 1;
+      metrics.toolLatencies[toolName] = stat;
+    }
   } catch (err: any) {
-    console.error('MCP error', err);
+    logger.error({ err }, 'MCP error');
+    metrics.errors++;
     if (!res.headersSent) res.status(500).json({ error: 'Server error' });
   }
 });
 
-app.get(['/mcp/sse', '/mcp/sse/'], async (_req: Request, res: Response) => {
+app.get(['/mcp/sse', '/mcp/sse/'], maybeRequireApiKey, async (_req: Request, res: Response) => {
   try {
     const transport = new SSEServerTransport('/mcp/messages', res);
     const sid = transport.sessionId;
@@ -1456,12 +1757,12 @@ app.get(['/mcp/sse', '/mcp/sse/'], async (_req: Request, res: Response) => {
     };
     await server.connect(transport);
   } catch (err) {
-    console.error('Sefaria MCP SSE init error', err);
+    logger.error({ err }, 'Sefaria MCP SSE init error');
     if (!res.headersSent) res.status(500).send('Error establishing SSE stream');
   }
 });
 
-app.post('/mcp/messages', async (req: Request, res: Response) => {
+app.post('/mcp/messages', maybeRequireApiKey, async (req: Request, res: Response) => {
   const sessionId = String((req.query as any).sessionId || '');
   if (!sessionId) return res.status(400).send('Missing sessionId parameter');
   const transport = sefariaSseTransports[sessionId];
@@ -1469,7 +1770,8 @@ app.post('/mcp/messages', async (req: Request, res: Response) => {
   try {
     await transport.handlePostMessage(req as any, res as any, (req as any).body);
   } catch (err) {
-    console.error('Sefaria MCP SSE message error', err);
+    logger.error({ err }, 'Sefaria MCP SSE message error');
+    metrics.errors++;
     if (!res.headersSent) res.status(500).send('Error handling request');
   }
 });
@@ -1477,21 +1779,22 @@ app.post('/mcp/messages', async (req: Request, res: Response) => {
 // --- Web research MCP: search + fetch (generic web) ---
 // Environment/config
 const TAVILY_API_KEY = process.env.TAVILY_API_KEY || '';
-const WEB_MAX_RESULTS = Math.min(Math.max(parseInt(process.env.WEB_MAX_RESULTS || '10', 10) || 10, 1), 25);
-const WEB_MAX_BYTES = Math.min(Math.max(parseInt(process.env.WEB_MAX_BYTES || String(2 * 1024 * 1024), 10) || (2 * 1024 * 1024), 50_000), 10 * 1024 * 1024); // 50KB-10MB
-const WEB_MAX_CHARS = Math.min(Math.max(parseInt(process.env.WEB_MAX_CHARS || String(200_000), 10) || 200_000, 5_000), 1_000_000);
-const WEB_TIMEOUT_MS = Math.min(Math.max(parseInt(process.env.WEB_TIMEOUT_MS || '12000', 10) || 12000, 3000), 60000);
+const webCfg = cfg.web ?? {};
+const WEB_MAX_RESULTS = Math.min(Math.max(parseInt(process.env.WEB_MAX_RESULTS || `${webCfg.maxResults ?? 10}`, 10) || (webCfg.maxResults ?? 10), 1), 25);
+const WEB_MAX_BYTES = Math.min(Math.max(parseInt(process.env.WEB_MAX_BYTES || `${webCfg.maxBytes ?? 2 * 1024 * 1024}`, 10) || (webCfg.maxBytes ?? 2 * 1024 * 1024), 50_000), 10 * 1024 * 1024);
+const WEB_MAX_CHARS = Math.min(Math.max(parseInt(process.env.WEB_MAX_CHARS || `${webCfg.maxChars ?? 200_000}`, 10) || (webCfg.maxChars ?? 200_000), 5_000), 1_000_000);
+const WEB_TIMEOUT_MS = Math.min(Math.max(parseInt(process.env.WEB_TIMEOUT_MS || `${webCfg.timeoutMs ?? 12_000}`, 10) || (webCfg.timeoutMs ?? 12_000), 3000), 60000);
 const WEB_BLOCKLIST = new Set((process.env.WEB_BLOCKLIST || '').split(',').map(s => s.trim()).filter(Boolean));
 const WEB_ALLOWLIST = new Set((process.env.WEB_ALLOWLIST || '').split(',').map(s => s.trim()).filter(Boolean));
-const WEB_MAX_CONCURRENCY = Math.min(Math.max(parseInt(process.env.WEB_MAX_CONCURRENCY || '4', 10) || 4, 1), 16);
-const WEB_PER_HOST_CONCURRENCY = Math.min(Math.max(parseInt(process.env.WEB_PER_HOST_CONCURRENCY || '2', 10) || 2, 1), 8);
-const ROBOTS_OBEY = String(process.env.ROBOTS_OBEY || 'false').toLowerCase() === 'true';
-const ROBOTS_AGENT = process.env.ROBOTS_USER_AGENT || 'OpenDeepResearch-MCP/1.0';
-const USER_AGENT = 'OpenDeepResearch-MCP/1.0 (+https://github.com/langchain-ai/open_deep_research)';
-const CACHE_TTL_MS = Math.min(Math.max(parseInt(process.env.CACHE_TTL_MS || String(5 * 60_000), 10) || (5 * 60_000), 10_000), 60 * 60_000);
+const WEB_MAX_CONCURRENCY = Math.min(Math.max(parseInt(process.env.WEB_MAX_CONCURRENCY || `${webCfg.maxConcurrency ?? 4}`, 10) || (webCfg.maxConcurrency ?? 4), 1), 16);
+const WEB_PER_HOST_CONCURRENCY = Math.min(Math.max(parseInt(process.env.WEB_PER_HOST_CONCURRENCY || `${webCfg.perHostConcurrency ?? 2}`, 10) || (webCfg.perHostConcurrency ?? 2), 1), 8);
+const ROBOTS_OBEY = String(process.env.ROBOTS_OBEY ?? `${webCfg.obeyRobots ?? false}`).toLowerCase() === 'true';
+const ROBOTS_AGENT = process.env.ROBOTS_USER_AGENT || webCfg.userAgent || 'OpenDeepResearch-MCP/1.0';
+const USER_AGENT = ROBOTS_AGENT;
+const CACHE_TTL_MS = Math.min(Math.max(parseInt(process.env.CACHE_TTL_MS || `${(cfg.cache?.ttlMs ?? 5 * 60_000)}`, 10) || (cfg.cache?.ttlMs ?? 5 * 60_000), 10_000), 60 * 60_000);
 const SERPAPI_KEY = process.env.SERPAPI_KEY || '';
 const BRAVE_API_KEY = process.env.BRAVE_API_KEY || '';
-const WEB_CACHE_MAX_ENTRIES = Math.min(Math.max(parseInt(process.env.WEB_CACHE_MAX_ENTRIES || '200', 10) || 200, 10), 2000);
+const WEB_CACHE_MAX_ENTRIES = Math.min(Math.max(parseInt(process.env.WEB_CACHE_MAX_ENTRIES || `${cfg.cache?.maxEntries ?? 200}`, 10) || (cfg.cache?.maxEntries ?? 200), 10), 2000);
 
 const isBlockedHost = (host: string) => WEB_BLOCKLIST.size > 0 && WEB_BLOCKLIST.has(host);
 const isAllowedHost = (host: string) => WEB_ALLOWLIST.size === 0 || WEB_ALLOWLIST.has(host);
@@ -1823,23 +2126,65 @@ webServer.registerTool(
 );
 
 // Rate limiting for MCP endpoints
-const mcpLimiter = rateLimit({ windowMs: 60_000, limit: 60, standardHeaders: 'draft-7', legacyHeaders: false });
+const rateLimitMax = Number(process.env.MCP_RATE_LIMIT_MAX ?? cfg.rateLimit?.max ?? 60);
+const rateLimitWindow = Number(process.env.MCP_RATE_LIMIT_WINDOW_MS ?? cfg.rateLimit?.windowMs ?? 60_000);
+export const mcpLimiter = rateLimit({ windowMs: rateLimitWindow, limit: rateLimitMax, standardHeaders: 'draft-7', legacyHeaders: false });
 app.use(['/mcp', '/mcp/sse', '/mcp/messages', '/mcp-web', '/mcp-web/sse', '/mcp-web/messages'], mcpLimiter);
 
-app.post('/mcp-web', async (req: Request, res: Response) => {
+// Simple image proxy (optional) – enforces content-type and size; helpful for hosts that need a stable URL
+app.get('/image-proxy', async (req: Request, res: Response) => {
+  try {
+    const url = String((req.query as any).url || '').trim();
+    if (!url) return res.status(400).json({ error: 'Missing url' });
+    const loaded = await loadImageAsDataUrl(url);
+    const b64 = loaded.dataUrl.split(',')[1];
+    const buf = Buffer.from(b64, 'base64');
+    res.setHeader('Content-Type', loaded.mime);
+    res.setHeader('Cache-Control', 'public, max-age=600');
+    res.send(buf);
+  } catch (err: any) {
+    res.status(400).json({ error: String(err?.message || err) });
+  }
+});
+
+app.post('/health/python', maybeRequireApiKey, (req: Request, res: Response) => {
+  const status = typeof req.body?.status === 'string' && req.body.status.toLowerCase() === 'error' ? 'error' : 'ok';
+  pythonChainHeartbeat = { status, checkedAt: Date.now() };
+  res.status(204).end();
+});
+
+// Dashboard view
+app.get('/dashboard', (_req: Request, res: Response) => {
+  res.type('html').send(DASHBOARD_HTML);
+});
+
+app.post('/mcp-web', maybeRequireApiKey, async (req: Request, res: Response) => {
   const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined, enableJsonResponse: true });
   res.on('close', () => transport.close());
   try {
+    const started = Date.now();
     await webServer.connect(transport);
     await transport.handleRequest(req, res, req.body);
+    const ms = Date.now() - started;
+    metrics.totalRequests++;
+    metrics.latSumMs += ms; metrics.latCount++;
+    const toolName = (req.body && req.body.method === 'tools/call' && req.body.params && (req.body.params.name as string)) || undefined;
+    if (toolName) {
+      metrics.toolCounts[toolName] = (metrics.toolCounts[toolName] || 0) + 1;
+      const stat = metrics.toolLatencies[toolName] || { sum: 0, count: 0 };
+      stat.sum += ms;
+      stat.count += 1;
+      metrics.toolLatencies[toolName] = stat;
+    }
   } catch (err: any) {
-    console.error('Web MCP error', err);
+    logger.error({ err }, 'Web MCP error');
+    metrics.errors++;
     if (!res.headersSent) res.status(500).json({ error: 'Server error' });
   }
 });
 
 // Deprecated HTTP+SSE transport for ChatGPT connectors compatibility
-app.get(['/mcp-web/sse', '/mcp-web/sse/'], async (_req: Request, res: Response) => {
+app.get(['/mcp-web/sse', '/mcp-web/sse/'], maybeRequireApiKey, async (_req: Request, res: Response) => {
   try {
     const transport = new SSEServerTransport('/mcp-web/messages', res);
     webSseTransports[transport.sessionId] = transport;
@@ -1854,12 +2199,12 @@ app.get(['/mcp-web/sse', '/mcp-web/sse/'], async (_req: Request, res: Response) 
     };
     await webServer.connect(transport);
   } catch (err) {
-    console.error('Web MCP SSE init error', err);
+    logger.error({ err }, 'Web MCP SSE init error');
     if (!res.headersSent) res.status(500).send('Error establishing SSE stream');
   }
 });
 
-app.post('/mcp-web/messages', async (req: Request, res: Response) => {
+app.post('/mcp-web/messages', maybeRequireApiKey, async (req: Request, res: Response) => {
   const sessionId = String((req.query as any).sessionId || '');
   if (!sessionId) return res.status(400).send('Missing sessionId parameter');
   const transport = webSseTransports[sessionId];
@@ -1867,32 +2212,35 @@ app.post('/mcp-web/messages', async (req: Request, res: Response) => {
   try {
     await transport.handlePostMessage(req as any, res as any, (req as any).body);
   } catch (err) {
-    console.error('Web MCP SSE message error', err);
+    logger.error({ err }, 'Web MCP SSE message error');
+    metrics.errors++;
     if (!res.headersSent) res.status(500).send('Error handling request');
   }
 });
 
-const port = parseInt(process.env.PORT || '3000', 10);
-app.listen(port, () => {
-  console.log(`Torah MCP running at http://localhost:${port}/mcp`);
-  console.log(`Torah MCP SSE (for ChatGPT connectors):`);
-  console.log(`  SSE:       http://localhost:${port}/mcp/sse/`);
-  console.log(`  Messages:  http://localhost:${port}/mcp/messages`);
-  console.log(`Web Research MCP running at http://localhost:${port}/mcp-web`);
-  console.log(`Web Research MCP SSE (for ChatGPT connectors):`);
-  console.log(`  SSE:       http://localhost:${port}/mcp-web/sse/`);
-  console.log(`  Messages:  http://localhost:${port}/mcp-web/messages`);
-  console.log(JSON.stringify({
-    event: 'web_mcp_config',
-    ROBOTS_OBEY,
-    WEB_MAX_RESULTS,
-    WEB_MAX_BYTES,
-    WEB_MAX_CHARS,
-    WEB_TIMEOUT_MS,
-    WEB_MAX_CONCURRENCY,
-    WEB_PER_HOST_CONCURRENCY,
-    CACHE_TTL_MS,
-    WEB_CACHE_MAX_ENTRIES,
-    providers: { tavily: !!TAVILY_API_KEY, serpapi: !!SERPAPI_KEY, brave: !!BRAVE_API_KEY }
-  }));
-});
+const port = parseInt(process.env.PORT || cfg.port || '3000', 10);
+if (!process.env.NO_LISTEN) {
+  app.listen(port, () => {
+    logger.info(`Torah MCP running at http://localhost:${port}/mcp`);
+    logger.info(`Torah MCP SSE (for ChatGPT connectors):`);
+    logger.info(`  SSE:       http://localhost:${port}/mcp/sse/`);
+    logger.info(`  Messages:  http://localhost:${port}/mcp/messages`);
+    logger.info(`Web Research MCP running at http://localhost:${port}/mcp-web`);
+    logger.info(`Web Research MCP SSE (for ChatGPT connectors):`);
+    logger.info(`  SSE:       http://localhost:${port}/mcp-web/sse/`);
+    logger.info(`  Messages:  http://localhost:${port}/mcp-web/messages`);
+    logger.info({
+      event: 'web_mcp_config',
+      ROBOTS_OBEY,
+      WEB_MAX_RESULTS,
+      WEB_MAX_BYTES,
+      WEB_MAX_CHARS,
+      WEB_TIMEOUT_MS,
+      WEB_MAX_CONCURRENCY,
+      WEB_PER_HOST_CONCURRENCY,
+      CACHE_TTL_MS,
+      WEB_CACHE_MAX_ENTRIES,
+      providers: { tavily: !!TAVILY_API_KEY, serpapi: !!SERPAPI_KEY, brave: !!BRAVE_API_KEY }
+    }, 'Config');
+  });
+}

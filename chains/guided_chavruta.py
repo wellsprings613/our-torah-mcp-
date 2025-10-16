@@ -11,6 +11,7 @@ import asyncio
 import json
 import os
 from typing import Any, Dict, List, Optional
+import logging
 
 from langchain_mcp_adapters.client import MultiServerMCPClient
 
@@ -38,6 +39,9 @@ def _structured(result: Dict[str, Any] | str) -> Dict[str, Any]:
     return {}
 
 
+logger = logging.getLogger(__name__)
+
+
 class GuidedChavrutaChain:
     def __init__(self, server_url: str) -> None:
         self.server_url = server_url
@@ -56,6 +60,7 @@ class GuidedChavrutaChain:
         self.tools = {tool.name: tool for tool in tool_list}
 
     async def run(self, question: str) -> Dict[str, Any]:
+        logger.debug("chavruta.start", extra={"question": question})
         await self._ensure_tools()
 
         # Step 1: resolve primary ref
@@ -164,6 +169,7 @@ class GuidedChavrutaChain:
             "reflection_questions": reflection_questions,
             "summary": summary,
         }
+        logger.debug("chavruta.done", extra={"question": question})
         return result
 
 
@@ -179,4 +185,5 @@ async def main() -> None:
 
 
 if __name__ == "__main__":
+    logging.basicConfig(level=logging.INFO)
     asyncio.run(main())

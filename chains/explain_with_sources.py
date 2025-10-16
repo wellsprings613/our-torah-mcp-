@@ -14,6 +14,7 @@ import os
 import re
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Set
+import logging
 
 from urllib.parse import quote
 
@@ -104,6 +105,9 @@ class SourceQuote:
     hebrew: str
 
 
+logger = logging.getLogger(__name__)
+
+
 class ExplainWithSourcesChain:
     def __init__(self, server_url: str, model: str | None = None) -> None:
         self.client = MultiServerMCPClient(
@@ -141,6 +145,7 @@ class ExplainWithSourcesChain:
         max_sources: int = 3,
         seed_refs: Optional[List[Dict[str, str]]] = None,
     ) -> str:
+        logger.debug("explain.start", extra={"question": question})
         await self._ensure_tools()
         search_queries: List[str] = []
         base = question.strip()
@@ -322,6 +327,7 @@ Return a markdown response with:
             output = response.content if isinstance(response.content, str) else str(response.content)
             if halacha_flag and "disclaimer" not in output.lower():
                 output += "\n\n_Disclaimer: For practical halacha, consult your rav._"
+            logger.debug("explain.done", extra={"question": question})
             return output
         except Exception as err:
             lines = ["LLM unavailable; presenting sources directly."]
@@ -366,4 +372,5 @@ async def main() -> None:
 
 
 if __name__ == "__main__":
+    logging.basicConfig(level=logging.INFO)
     asyncio.run(main())

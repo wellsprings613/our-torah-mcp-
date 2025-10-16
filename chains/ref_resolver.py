@@ -14,6 +14,7 @@ import json
 import os
 import re
 from typing import Any, Dict, Optional
+import logging
 
 from langchain_mcp_adapters.client import MultiServerMCPClient
 
@@ -42,6 +43,9 @@ def _structured(result: Dict[str, Any] | str) -> Dict[str, Any]:
     return {}
 
 
+logger = logging.getLogger(__name__)
+
+
 class RefResolverChain:
     """Resolve refs by combining fetch + search MCP tools."""
 
@@ -63,11 +67,13 @@ class RefResolverChain:
         self.tools = {tool.name: tool for tool in tool_list}
 
     async def resolve(self, query: str, *, max_chars: int = 800) -> Dict[str, Any]:
+        logger.debug("resolve.start", extra={"query": query})
         await self._ensure_tools()
         if self._query_is_pure_ref(query):
             detail = await self._resolve_ref(query, max_chars=max_chars)
             detail["query"] = query
             detail["resolution_path"] = ["direct"]
+            logger.debug("resolve.direct", extra={"query": query})
             return detail
 
         hits: list[Dict[str, Any]] = []
@@ -134,6 +140,7 @@ class RefResolverChain:
 
             if search_error:
                 return {"error": f"Search failed: {search_error}", "query": query}
+            logger.debug("resolve.none", extra={"query": query})
             return {"error": "No sources found", "query": query}
 
         top = hits[0]
@@ -143,6 +150,7 @@ class RefResolverChain:
         detail["resolution_path"] = resolution_path
         if search_error:
             detail["search_error"] = str(search_error)
+        logger.debug("resolve.done", extra={"query": query})
         return detail
 
     @staticmethod
@@ -267,4 +275,5 @@ async def main() -> None:
 
 
 if __name__ == "__main__":
+    logging.basicConfig(level=logging.INFO)
     asyncio.run(main())

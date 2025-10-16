@@ -8,7 +8,9 @@
     "dev": "tsx watch src/server.ts",
     "start": "tsx src/server.ts",
     "typecheck": "tsc --noEmit",
-    "chat-ui": "node ui/server.js"
+    "chat-ui": "node ui/server.js",
+    "test": "tsx --test \"test/server.test.ts\"",
+    "test:chains": "python3 -m pytest -q"
   },
   "engines": {
     "node": ">=18.17.0"
@@ -16,20 +18,25 @@
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.20.0",
     "@mozilla/readability": "^0.5.0",
-    "express-rate-limit": "^7.4.0",
+    "config": "^3.3.12",
     "express": "^4.19.2",
+    "express-rate-limit": "^7.4.0",
     "jsdom": "^24.1.0",
     "node-fetch": "^3.3.2",
     "pdf-parse": "^1.1.1",
     "pdfjs-dist": "^4.6.82",
+    "pino": "^9.4.0",
+    "pino-http": "^9.0.0",
     "robots-parser": "^3.0.1",
     "zod": "^3.23.8"
   },
   "devDependencies": {
+    "@types/config": "^3.3.5",
     "@types/express": "^5.0.3",
-    "@types/node": "^24.7.2",
     "@types/jsdom": "^21.1.7",
+    "@types/node": "^24.7.2",
     "@types/pdf-parse": "^1.1.5",
+    "supertest": "^7.1.4",
     "tsx": "^4.19.2",
     "typescript": "^5.6.3"
   }
