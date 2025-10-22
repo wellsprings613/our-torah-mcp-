@@ -139,6 +139,54 @@ Create **two connectors** so GPT can call both the Sefaria tools and the web sea
 
 ---
 
+## **🌐 Public Deployment (Railway)**
+
+Want to make Torah MCP available 24/7 for ChatGPT and Claude users worldwide?
+
+### **Deploy to Railway in 5 Minutes**
+
+Railway provides a simple, affordable way to deploy your Torah MCP server to the cloud with automatic SSL, zero-config deployment, and generous free trial.
+
+**Quick Deployment Steps:**
+
+1. **Sign up:** [railway.com](https://railway.com) (use GitHub account)
+2. **New Project** → **Deploy from GitHub repo**
+3. **Select:** `your-repo/torah-mcp`
+4. **Generate Domain** in Settings → Networking
+5. **Done!** Your MCP is live at `https://your-domain.up.railway.app`
+
+**Your Public MCP Connector URL:**
+```
+https://your-railway-domain.up.railway.app/mcp/sse/
+```
+
+**Cost:** $5-7/month on Railway Hobby plan (includes $5 usage credit)
+
+📖 **[Complete Railway Deployment Guide](./RAILWAY_DEPLOYMENT.md)** - Step-by-step instructions with troubleshooting, environment variables, cost optimization, and monitoring.
+
+### **Connecting from Claude/ChatGPT Apps:**
+
+Once deployed, users can add your Torah MCP via their app's connector settings:
+
+**Claude Mobile/Desktop:**
+- Name: `Torah MCP - Sefaria`
+- URL: `https://your-railway-domain.up.railway.app/mcp/sse/`
+- Authentication: `None` (or API Key if configured)
+
+**ChatGPT Connectors:**
+- Same URL format
+- Select tools to enable
+- Test with: "Search Sefaria for sources about Shabbat"
+
+### **Alternative Deployment Options:**
+
+- **Render.com** - Free tier with sleep after 15min inactivity
+- **Fly.io** - ~$5/month with MCP-specific tooling
+- **Oracle Cloud** - Forever free tier (4 vCPU, 24GB RAM)
+- **VPS** (DigitalOcean, Hetzner) - $4-6/month, requires manual setup
+
+---
+
 ## **💡 Usage Examples**
 
 ### **Basic Text Search**

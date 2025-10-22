@@ -10,14 +10,22 @@
     "typecheck": "tsc --noEmit",
     "chat-ui": "node ui/server.js",
     "test": "tsx --test \"test/server.test.ts\"",
-    "test:chains": "python3 -m pytest -q"
+    "test:chains": "python3 -m pytest -q",
+    "test:ui": "node tests/ui/run-ui-tests.js",
+    "test:ui:basic": "node tests/ui/run-ui-tests.js basic",
+    "test:ui:modes": "node tests/ui/run-ui-tests.js modes",
+    "test:ui:responsive": "node tests/ui/run-ui-tests.js responsive",
+    "test:ui:a11y": "node tests/ui/run-ui-tests.js accessibility",
+    "test:ui:all": "node tests/ui/run-ui-tests.js all"
   },
   "engines": {
     "node": ">=18.17.0"
   },
   "dependencies": {
+    "@ai-sdk/openai": "^2.0.52",
     "@modelcontextprotocol/sdk": "^1.20.0",
     "@mozilla/readability": "^0.5.0",
+    "ai": "^5.0.76",
     "config": "^3.3.12",
     "express": "^4.19.2",
     "express-rate-limit": "^7.4.0",
@@ -28,6 +36,7 @@
     "pino": "^9.4.0",
     "pino-http": "^9.0.0",
     "robots-parser": "^3.0.1",
+    "tsx": "^4.19.2",
     "zod": "^3.23.8"
   },
   "devDependencies": {
@@ -37,7 +46,6 @@
     "@types/node": "^24.7.2",
     "@types/pdf-parse": "^1.1.5",
     "supertest": "^7.1.4",
-    "tsx": "^4.19.2",
     "typescript": "^5.6.3"
   }
 }
